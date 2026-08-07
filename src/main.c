@@ -24,9 +24,13 @@ typedef struct {
     float flash;
 } Cell;
 
+enum { FT_NORMAL = 0, FT_VOLATILE, FT_PINNED };
+
 typedef struct {
     int size;
     int alive;
+    int type;
+    int pinned;
     float life;
     float lifeMax;
 } FileRec;
@@ -47,6 +51,8 @@ static float playT;
 static float shake;
 static float moveT;
 static int compacted;
+static int repairFill;
+static int seenVolatile, seenPinned;
 static const char *noticeMsg;
 static float noticeT;
 static unsigned int rngState;
@@ -121,7 +127,7 @@ static int rndRange(int lo, int hi)
 
 enum { OSC_SQUARE = 0, OSC_TRI, OSC_NOISE };
 
-static Sound sfxPick, sfxDrop, sfxRot, sfxOver, sfxAssist;
+static Sound sfxPick, sfxDrop, sfxRot, sfxOver, sfxAssist, sfxDeny, sfxRepair;
 static Sound sfxCompact[4];
 static AudioStream musicStream;
 static int audioReady;
@@ -274,6 +280,16 @@ static void initAudio(void)
     a[0] = 700.0f;  b[0] = 1000.0f; t[0] = OSC_SQUARE;
     sfxAssist = renderTone(a, b, t, 1, 0.18f, 0.25f);
 
+    a[0] = 200.0f;  b[0] = 110.0f;  t[0] = OSC_SQUARE;
+    sfxDeny = renderTone(a, b, t, 1, 0.10f, 0.28f);
+
+    for (int s = 0; s < 3; s++) {
+        a[s] = 520.0f + (float)s * 190.0f;
+        b[s] = a[s];
+        t[s] = OSC_TRI;
+    }
+    sfxRepair = renderTone(a, b, t, 3, 0.075f, 0.40f);
+
     for (int k = 0; k < 4; k++) {
         float base = 440.0f;
         for (int s = 0; s < k; s++) base *= 1.335f;
@@ -330,6 +346,14 @@ static int freeCount(void)
     return n;
 }
 
+static int nextFileSize(void)
+{
+    int hi = 5;
+    if (compacted >= 10) hi = 6;
+    if (compacted >= 20) hi = 7;
+    return rndRange(FILE_MIN, hi);
+}
+
 static int newFileId(void)
 {
     for (int f = 0; f < MAX_FILES; f++) if (!files[f].alive) return f;
@@ -342,19 +366,41 @@ static int writeFile(int size)
     int f = newFileId();
     if (f < 0) return 1;
 
+    int type = FT_NORMAL;
+    if (compacted >= 3 && rndRange(0, 99) < 22) type = FT_VOLATILE;
+    else if (compacted >= 8 && size >= 3 && rndRange(0, 99) < 25) type = FT_PINNED;
+
     files[f].size = size;
     files[f].alive = 1;
+    files[f].type = type;
+    files[f].pinned = -1;
     files[f].lifeMax = 24.0f - playT * 0.15f;
     if (files[f].lifeMax < 10.0f) files[f].lifeMax = 10.0f;
+    if (type == FT_VOLATILE) files[f].lifeMax *= 0.5f;
     files[f].life = files[f].lifeMax;
 
+    int spots[8];
     for (int placed = 0; placed < size; ) {
         int i = (int)(rnd() % GRID_N);
         if (grid[i].kind != EMPTY) continue;
         grid[i].kind = BLOCK;
         grid[i].file = (unsigned char)f;
         grid[i].flash = 0.35f;
+        spots[placed] = i;
         placed++;
+    }
+
+    if (type == FT_PINNED) files[f].pinned = spots[rndRange(0, size - 1)];
+
+    if (type == FT_VOLATILE && !seenVolatile) {
+        seenVolatile = 1;
+        noticeMsg = "VOLATILE FILE - HALF THE LIFE, TRIPLE THE SCORE";
+        noticeT = 3.4f;
+    }
+    if (type == FT_PINNED && !seenPinned) {
+        seenPinned = 1;
+        noticeMsg = "PINNED BLOCK - IT CANNOT BE MOVED, BUILD AROUND IT";
+        noticeT = 3.4f;
     }
     return 1;
 }
@@ -375,6 +421,28 @@ static void rotFile(int f)
     shake = 14.0f;
     hitstop = 0.10f;
     playSfx(sfxRot);
+}
+
+#define REPAIR_COST 14
+
+static void runScandisk(void)
+{
+    int fixed = 0;
+    for (int i = 0; i < GRID_N && fixed < 3; i++) {
+        if (grid[i].kind != BAD) continue;
+        grid[i].kind = CLEARING;
+        grid[i].file = 2;
+        grid[i].flash = 0.30f + (float)fixed * 0.12f;
+        fixed++;
+    }
+    if (fixed == 0) return;
+
+    repairFill -= REPAIR_COST;
+    if (repairFill < 0) repairFill = 0;
+    shake = 8.0f;
+    playSfx(sfxRepair);
+    noticeMsg = "SCANDISK - SECTORS RECOVERED";
+    noticeT = 2.2f;
 }
 
 static void checkSorted(void)
@@ -402,10 +470,13 @@ static void checkSorted(void)
         combo++;
         comboT = 4.0f;
         int gained = count * count * 10 * combo;
+        if (files[f].type == FT_VOLATILE) gained *= 3;
         score += gained;
         shake = 5.0f + (float)count * 1.5f;
         hitstop = 0.05f + (float)count * 0.012f;
         spawnPop(first % GRID_W, first / GRID_W, gained, FILE_COL[f & 7]);
+        repairFill += count;
+        if (repairFill >= REPAIR_COST) runScandisk();
         playSfx(sfxCompact[(combo - 1 > 3) ? 3 : combo - 1]);
 
         int before = assistLevel();
@@ -425,8 +496,10 @@ static int targetWindow(int f)
     int headIdx = headY * GRID_W + headX;
     int best = -1, bestScore = -1;
 
+    int pin = files[f].pinned;
     for (int s = 0; s + n <= GRID_N; s++) {
         if (s / GRID_W != (s + n - 1) / GRID_W) continue;
+        if (pin >= 0 && (pin < s || pin >= s + n)) continue;
 
         int own = 0, ok = 1;
         for (int k = 0; k < n; k++) {
@@ -483,6 +556,9 @@ static void resetGame(void)
     for (int i = 0; i < MAX_PARTICLES; i++) parts[i].life = 0;
     for (int i = 0; i < MAX_POPS; i++) pops[i].life = 0;
     compacted = 0;
+    repairFill = 0;
+    seenVolatile = 0;
+    seenPinned = 0;
     noticeMsg = NULL;
     noticeT = 0;
     writeInterval = 4.5f;
@@ -585,7 +661,11 @@ static void updatePlay(float dt)
     if (actionPressed()) {
         int i = headY * GRID_W + headX;
         if (carrying < 0) {
-            if (grid[i].kind == BLOCK) {
+            if (grid[i].kind == BLOCK && files[grid[i].file].pinned == i) {
+                grid[i].flash = 0.3f;
+                shake = 3.0f;
+                playSfx(sfxDeny);
+            } else if (grid[i].kind == BLOCK) {
                 carrying = grid[i].file;
                 grid[i].kind = EMPTY;
                 grid[i].flash = 0.2f;
@@ -606,7 +686,7 @@ static void updatePlay(float dt)
 
     writeT -= dt;
     if (writeT <= 0.0f) {
-        if (!writeFile(rndRange(FILE_MIN, FILE_MAX))) {
+        if (!writeFile(nextFileSize())) {
             if (score > best) best = score;
             screen = SC_OVER;
             shake = 18.0f;
@@ -714,6 +794,20 @@ static void drawGrid(void)
                 }
                 drawCellRect(x, y, 3, col);
 
+                if (fr->alive && fr->type == FT_VOLATILE) {
+                    float p2 = 0.45f + 0.55f * (float)((int)(playT * 9.0f) & 1);
+                    DrawRectangle(GRID_X + x * CELL + 15, GRID_Y + y * CELL + 15, 10, 10,
+                                  (Color){255, 255, 255, (unsigned char)(200 * p2)});
+                }
+                if (fr->alive && fr->pinned == i) {
+                    DrawRectangleLinesEx(
+                        (Rectangle){(float)(GRID_X + x * CELL + 3),
+                                    (float)(GRID_Y + y * CELL + 3), CELL - 6, CELL - 6},
+                        3, (Color){20, 24, 40, 255});
+                    DrawRectangle(GRID_X + x * CELL + 17, GRID_Y + y * CELL + 17, 6, 6,
+                                  (Color){20, 24, 40, 255});
+                }
+
                 if (x > 0 && grid[i - 1].kind == BLOCK && grid[i - 1].file == c->file) {
                     DrawRectangle(GRID_X + x * CELL - 5, GRID_Y + y * CELL + CELL / 2 - 5,
                                   10, 10, col);
@@ -802,6 +896,13 @@ static void drawHud(void)
     DrawRectangleLines(640, 56, 220, 14, SECTOR_LN);
     DrawText(TextFormat("%d SECTORS  (%d%%)", fr, pct), 640, 76, 10, DIMTEXT);
 
+    int rf = repairFill;
+    if (rf > REPAIR_COST) rf = REPAIR_COST;
+    DrawText("SCANDISK", 640, 92, 10, DIMTEXT);
+    DrawRectangle(716, 92, 144, 10, SECTOR);
+    DrawRectangle(716, 92, 144 * rf / REPAIR_COST, 10, (Color){120, 200, 255, 255});
+    DrawRectangleLines(716, 92, 144, 10, SECTOR_LN);
+
     int col = GRID_X;
     for (int f = 0; f < MAX_FILES; f++) {
         if (!files[f].alive) continue;
@@ -809,8 +910,15 @@ static void drawHud(void)
         float t = (files[f].lifeMax > 0.0f) ? files[f].life / files[f].lifeMax : 0.0f;
         if (t < 0.0f) t = 0.0f;
 
-        for (int k = 0; k < files[f].size; k++)
+        if (col > SCREEN_W - 140) break;
+
+        for (int k = 0; k < files[f].size; k++) {
             DrawRectangle(col + k * 9, y, 7, 12, FILE_COL[f & 7]);
+            if (files[f].type == FT_VOLATILE)
+                DrawRectangle(col + k * 9 + 2, y + 4, 3, 4, (Color){255, 255, 255, 255});
+        }
+        if (files[f].pinned >= 0)
+            DrawRectangle(col, y + 14, files[f].size * 9 - 2, 2, (Color){140, 160, 210, 255});
 
         int barX = col + files[f].size * 9 + 4;
         DrawRectangle(barX, y + 2, 30, 8, SECTOR);
@@ -852,6 +960,8 @@ static void drawTitle(void)
     DrawText("THE FILE COMPACTS AWAY", 540, 390, 12, TEXTCOL);
     DrawText("LEAVE A FILE TOO LONG AND IT ROTS INTO DEAD SECTORS.", 300, 430, 12,
              (Color){255, 110, 110, 255});
+    DrawText("COMPACT ENOUGH AND SCANDISK GIVES DEAD SECTORS BACK.", 300, 452, 12,
+             (Color){120, 200, 255, 255});
 
     DrawText("PRESS SPACE TO START", SCREEN_W / 2 - 120, 500, 20, TEXTCOL);
     DrawText("F: FULLSCREEN     M: SOUND     ESC: QUIT",
