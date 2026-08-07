@@ -52,6 +52,10 @@ static float shake;
 static float moveT;
 static int compacted;
 static int repairFill;
+static int bestCombo;
+static int rotted;
+static int recovered;
+static int newBest;
 static int seenVolatile, seenPinned;
 static const char *noticeMsg;
 static float noticeT;
@@ -420,6 +424,7 @@ static void rotFile(int f)
         }
     }
     files[f].alive = 0;
+    rotted++;
     if (carrying == f) carrying = -1;
     combo = 0;
     comboT = 0;
@@ -442,6 +447,7 @@ static void runScandisk(void)
     }
     if (fixed == 0) return;
 
+    recovered += fixed;
     repairFill -= REPAIR_COST;
     if (repairFill < 0) repairFill = 0;
     shake = 8.0f;
@@ -473,6 +479,7 @@ static void checkSorted(void)
         files[f].alive = 0;
 
         combo++;
+        if (combo > bestCombo) bestCombo = combo;
         comboT = 4.0f;
         int gained = count * count * 10 * combo;
         if (files[f].type == FT_VOLATILE) gained *= 3;
@@ -563,6 +570,10 @@ static void resetGame(void)
     for (int i = 0; i < MAX_POPS; i++) pops[i].life = 0;
     compacted = 0;
     repairFill = 0;
+    bestCombo = 0;
+    rotted = 0;
+    recovered = 0;
+    newBest = 0;
     seenVolatile = 0;
     seenPinned = 0;
     noticeMsg = NULL;
@@ -752,7 +763,7 @@ static void updatePlay(float dt)
     writeT -= dt;
     if (writeT <= 0.0f) {
         if (!writeFile(nextFileSize())) {
-            if (score > best) best = score;
+            if (score > best) { best = score; newBest = 1; }
             screen = SC_OVER;
             shake = 18.0f;
             playSfx(sfxOver);
@@ -909,7 +920,7 @@ static void drawGrid(void)
     int hx = GRID_X + (int)(headVX * CELL);
     int hy = GRID_Y + (int)(headVY * CELL);
     Color hc = (carrying >= 0) ? FILE_COL[carrying & 7] : (Color){255, 255, 255, 255};
-    if (!paused) {
+    if (!paused && screen == SC_PLAY) {
         DrawRectangleLinesEx((Rectangle){(float)hx - 2, (float)hy - 2, CELL + 4, CELL + 4}, 2, hc);
         if (carrying >= 0)
             DrawRectangle(hx + 9, hy + 9, CELL - 18, CELL - 18, hc);
@@ -934,7 +945,7 @@ static void drawGrid(void)
                  (Color){p->c.r, p->c.g, p->c.b, (unsigned char)(255 * (t > 1.0f ? 1.0f : t))});
     }
 
-    if (!paused)
+    if (!paused && screen == SC_PLAY)
         DrawRectangle(GRID_X - 10, hy + CELL / 2 - 1, GRID_W * CELL + 20, 1,
                       (Color){hc.r, hc.g, hc.b, 40});
 }
@@ -1043,14 +1054,44 @@ static void drawPaused(void)
     DrawText("ESC            QUIT TO TITLE", SCREEN_W / 2 - 110, 422, 14, DIMTEXT);
 }
 
+static void statLine(int y, const char *label, const char *value, Color c)
+{
+    DrawText(label, SCREEN_W / 2 - 150, y, 14, DIMTEXT);
+    int w = MeasureText(value, 14);
+    DrawText(value, SCREEN_W / 2 + 150 - w, y, 14, c);
+}
+
 static void drawOver(void)
 {
-    DrawRectangle(0, 0, SCREEN_W, SCREEN_H, (Color){10, 14, 28, 200});
-    DrawText("DISK FULL", SCREEN_W / 2 - 130, 230, 50, (Color){255, 110, 110, 255});
-    DrawText(TextFormat("SCORE  %d", score), SCREEN_W / 2 - 90, 310, 24, TEXTCOL);
-    DrawText(TextFormat("BEST   %d", best), SCREEN_W / 2 - 90, 344, 14, DIMTEXT);
-    DrawText(TextFormat("SURVIVED  %d SECONDS", (int)playT), SCREEN_W / 2 - 110, 380, 12, DIMTEXT);
-    DrawText("PRESS SPACE TO RETRY", SCREEN_W / 2 - 120, 460, 20, TEXTCOL);
+    DrawRectangle(0, 0, SCREEN_W, SCREEN_H, (Color){10, 14, 28, 210});
+    DrawText("DISK FULL", SCREEN_W / 2 - 130, 120, 50, (Color){255, 110, 110, 255});
+    DrawText("NO FREE SECTOR LEFT TO WRITE INTO", SCREEN_W / 2 - 165, 178, 12, DIMTEXT);
+
+    const char *scoreTxt = TextFormat("%d", score);
+    const char *tag = newBest ? "NEW BEST" : TextFormat("BEST %d", best);
+    int tagSize = newBest ? 18 : 14;
+    int scoreW = MeasureText(scoreTxt, 44);
+    int tagW = MeasureText(tag, tagSize);
+    int groupX = SCREEN_W / 2 - (scoreW + 18 + tagW) / 2;
+
+    DrawText(scoreTxt, groupX, 218, 44, TEXTCOL);
+    DrawText(tag, groupX + scoreW + 18, 218 + 44 - tagSize - 2, tagSize,
+             newBest ? FILE_COL[((int)(titleT * 5.0f)) & 7] : DIMTEXT);
+
+    DrawRectangle(SCREEN_W / 2 - 150, 288, 300, 1, SECTOR_LN);
+
+    statLine(304, "FILES COMPACTED", TextFormat("%d", compacted), TEXTCOL);
+    statLine(328, "BEST COMBO", TextFormat("x%d", bestCombo), TEXTCOL);
+    statLine(352, "FILES LOST TO ROT", TextFormat("%d", rotted),
+             rotted > 0 ? (Color){255, 130, 130, 255} : DIMTEXT);
+    statLine(376, "SECTORS RECOVERED", TextFormat("%d", recovered),
+             recovered > 0 ? (Color){120, 200, 255, 255} : DIMTEXT);
+    statLine(400, "SURVIVED", TextFormat("%d:%02d", (int)playT / 60, (int)playT % 60), TEXTCOL);
+
+    DrawRectangle(SCREEN_W / 2 - 150, 428, 300, 1, SECTOR_LN);
+
+    DrawText("PRESS SPACE TO RETRY", SCREEN_W / 2 - 120, 468, 20, TEXTCOL);
+    DrawText("ESC: TITLE", SCREEN_W / 2 - 47, 500, 10, DIMTEXT);
 }
 
 int main(void)
