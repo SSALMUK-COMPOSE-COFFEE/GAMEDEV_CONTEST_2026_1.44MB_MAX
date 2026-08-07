@@ -86,8 +86,15 @@
 ## 빌드
 
 ```bash
+tools/bootstrap.sh  # 머신당 1회. 호스트에 맞는 zig 0.16.0 + raylib 5.5 → vendor/
 ./build.sh win      # dist-win/defrag.exe — 심사 대상. 용량 게이트 자동 실행
+./build.sh mac      # dist-mac/defrag — 개발용. 맥에서 직접 실행할 것
 ./build.sh linux    # dist-dev/defrag — 개발용 (X11 개발 헤더 필요)
+./build.sh both     # 호스트 개발 빌드 + win
 ```
 
-툴체인은 `vendor/`에 자동 배치 (zig 0.16.0 + raylib 5.5). git에는 올리지 않는다.
+- `vendor/`는 git에 올리지 않는다. 새 머신에서는 `bootstrap.sh`부터.
+- **맥 빌드는 크로스컴파일이 아니라 맥에서 네이티브로 돌린다.** macOS SDK가 필요하고,
+  `rglfw.c`는 Cocoa `.m` 소스를 include하므로 `-x objective-c`로 따로 컴파일한다.
+  링커도 GNU ld가 아니라 Apple ld라 `--gc-sections` 대신 `-dead_strip`을 쓴다.
+- Windows 빌드만 zig(크로스컴파일)를 쓰고, 나머지는 시스템 컴파일러를 쓴다.
