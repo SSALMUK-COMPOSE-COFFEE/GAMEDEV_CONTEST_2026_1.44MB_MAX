@@ -17,3 +17,9 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# 툴체인 / 서드파티 (build.sh가 받아옴)
+vendor/
+dist-dev/
+build/
+dist-mac/
