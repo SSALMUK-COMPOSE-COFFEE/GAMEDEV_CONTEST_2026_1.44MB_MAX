@@ -89,6 +89,8 @@ static Particle parts[MAX_PARTICLES];
 static int partNext;
 static Pop pops[MAX_POPS];
 static int popNext;
+static int paused;
+static int wasFocused = 1;
 static float hitstop;
 static float headVX, headVY;
 
@@ -471,6 +473,7 @@ static void resetGame(void)
     playT = 0;
     shake = 0;
     moveT = 0;
+    paused = 0;
     headVX = (float)headX;
     headVY = (float)headY;
     hitstop = 0;
@@ -620,6 +623,7 @@ static void drawGrid(void)
 
             drawCellRect(x, y, 1, SECTOR);
 
+            if (paused) continue;
             if (c->kind == BAD) {
                 drawCellRect(x, y, 3, BADCOL);
                 DrawLine(GRID_X + x * CELL + 8,  GRID_Y + y * CELL + 8,
@@ -663,7 +667,7 @@ static void drawGrid(void)
         }
     }
 
-    int ff = focusFile();
+    int ff = paused ? -1 : focusFile();
     if (ff >= 0) {
         int s = targetWindow(ff);
         if (s >= 0) {
@@ -687,13 +691,15 @@ static void drawGrid(void)
     int hx = GRID_X + (int)(headVX * CELL);
     int hy = GRID_Y + (int)(headVY * CELL);
     Color hc = (carrying >= 0) ? FILE_COL[carrying & 7] : (Color){255, 255, 255, 255};
-    DrawRectangleLinesEx((Rectangle){(float)hx - 2, (float)hy - 2, CELL + 4, CELL + 4}, 2, hc);
-    if (carrying >= 0)
-        DrawRectangle(hx + 9, hy + 9, CELL - 18, CELL - 18, hc);
+    if (!paused) {
+        DrawRectangleLinesEx((Rectangle){(float)hx - 2, (float)hy - 2, CELL + 4, CELL + 4}, 2, hc);
+        if (carrying >= 0)
+            DrawRectangle(hx + 9, hy + 9, CELL - 18, CELL - 18, hc);
+    }
 
     for (int i = 0; i < MAX_PARTICLES; i++) {
         Particle *p = &parts[i];
-        if (p->life <= 0.0f) continue;
+        if (p->life <= 0.0f || paused) continue;
         float t = p->life / p->maxLife;
         int sz = 2 + (int)(4.0f * t);
         DrawRectangle((int)p->x - sz / 2, (int)p->y - sz / 2, sz, sz,
@@ -702,7 +708,7 @@ static void drawGrid(void)
 
     for (int i = 0; i < MAX_POPS; i++) {
         Pop *p = &pops[i];
-        if (p->life <= 0.0f) continue;
+        if (p->life <= 0.0f || paused) continue;
         const char *txt = TextFormat("+%d", p->value);
         int w = MeasureText(txt, 20);
         float t = p->life / 0.9f;
@@ -710,8 +716,9 @@ static void drawGrid(void)
                  (Color){p->c.r, p->c.g, p->c.b, (unsigned char)(255 * (t > 1.0f ? 1.0f : t))});
     }
 
-    DrawRectangle(GRID_X - 10, hy + CELL / 2 - 1, GRID_W * CELL + 20, 1,
-                  (Color){hc.r, hc.g, hc.b, 40});
+    if (!paused)
+        DrawRectangle(GRID_X - 10, hy + CELL / 2 - 1, GRID_W * CELL + 20, 1,
+                      (Color){hc.r, hc.g, hc.b, 40});
 }
 
 static void drawHud(void)
@@ -759,7 +766,7 @@ static void drawHud(void)
         : "CARRY EACH BLOCK INTO THE GLOWING SLOTS OF ITS OWN COLOUR";
     DrawText(hint, GRID_X, GRID_Y + GRID_H * CELL + 22, 14,
              (carrying >= 0) ? FILE_COL[carrying & 7] : TEXTCOL);
-    DrawText("MOVE: ARROWS / WASD      PICK & DROP: SPACE      ESC: QUIT      M: SOUND",
+    DrawText("MOVE: ARROWS / WASD   PICK & DROP: SPACE   P: PAUSE   M: SOUND   ESC: QUIT",
              GRID_X, GRID_Y + GRID_H * CELL + 44, 10, DIMTEXT);
     DrawText(muted ? "SOUND OFF" : "SOUND ON", SCREEN_W - 200, 116, 10,
              muted ? (Color){255, 110, 110, 255} : DIMTEXT);
@@ -788,6 +795,16 @@ static void drawTitle(void)
              (Color){255, 110, 110, 255});
 
     DrawText("PRESS SPACE TO START", SCREEN_W / 2 - 120, 500, 20, TEXTCOL);
+}
+
+static void drawPaused(void)
+{
+    DrawRectangle(0, 0, SCREEN_W, SCREEN_H, (Color){10, 14, 28, 190});
+    DrawText("PAUSED", SCREEN_W / 2 - 95, 250, 42, TEXTCOL);
+    DrawText("THE DISK IS HIDDEN WHILE PAUSED", SCREEN_W / 2 - 155, 310, 12, DIMTEXT);
+    DrawText("P / START      RESUME", SCREEN_W / 2 - 110, 370, 14, TEXTCOL);
+    DrawText("M              SOUND", SCREEN_W / 2 - 110, 396, 14, DIMTEXT);
+    DrawText("ESC            QUIT TO TITLE", SCREEN_W / 2 - 110, 422, 14, DIMTEXT);
 }
 
 static void drawOver(void)
@@ -825,8 +842,16 @@ int main(void)
             if (IsKeyPressed(KEY_ESCAPE)) goto quit;
             break;
         case SC_PLAY:
-            if (hitstop > 0.0f) hitstop -= dt;
-            else updatePlay(dt);
+            if (IsKeyPressed(KEY_P) ||
+                IsGamepadButtonPressed(0, GAMEPAD_BUTTON_MIDDLE_RIGHT)) paused = !paused;
+            int focused = IsWindowFocused();
+            if (wasFocused && !focused) paused = 1;
+            wasFocused = focused;
+
+            if (!paused) {
+                if (hitstop > 0.0f) hitstop -= dt;
+                else updatePlay(dt);
+            }
             if (IsKeyPressed(KEY_ESCAPE)) screen = SC_TITLE;
             break;
         case SC_OVER:
@@ -853,6 +878,7 @@ int main(void)
             drawHud();
             EndMode2D();
 
+            if (paused && screen == SC_PLAY) drawPaused();
             if (screen == SC_OVER) drawOver();
         }
 
