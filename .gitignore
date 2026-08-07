@@ -1,0 +1,19 @@
+# 에이전트/툴 로컬 설정
+.claude/
+.orca/
+
+# 빌드 산출물
+dist-win/
+dist-mac/
+build/
+*.o
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# OS
+.DS_Store
+Thumbs.db
