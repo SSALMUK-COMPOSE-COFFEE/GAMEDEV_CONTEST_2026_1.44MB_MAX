@@ -37,7 +37,7 @@ build_mac() {
     -framework Cocoa -framework IOKit -framework CoreVideo -framework OpenGL \
     -framework CoreAudio -framework AudioToolbox
   strip -x dist-mac/defrag
-  echo "dev build: $(stat -f%z dist-mac/defrag) bytes (not the submission target)"
+  echo "dev build: $(wc -c < dist-mac/defrag | tr -d " ") bytes (not the submission target)"
 }
 
 build_linux() {
@@ -45,7 +45,7 @@ build_linux() {
   cc $CFLAGS -w -D_GLFW_X11 -Wl,--gc-sections -s \
     src/main.c $RAYLIB_CORE "$S/rglfw.c" -o dist-dev/defrag \
     -lGL -lm -lpthread -ldl -lrt -lX11
-  echo "dev build: $(stat -c%s dist-dev/defrag) bytes (not the submission target)"
+  echo "dev build: $(wc -c < dist-dev/defrag | tr -d " ") bytes (not the submission target)"
 }
 
 build_host_dev() {
