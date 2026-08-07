@@ -90,6 +90,9 @@ static int partNext;
 static Pop pops[MAX_POPS];
 static int popNext;
 static int paused;
+static float idleT;
+static float titleT;
+static RenderTexture2D target;
 static int wasFocused = 1;
 static float hitstop;
 static float headVX, headVY;
@@ -488,6 +491,51 @@ static void resetGame(void)
     writeFile(2);
 }
 
+static const short DEMO_FROM[3][3] = { { 5, 40, 77 }, { 12, 58, 95 }, { 30, 66, 122 } };
+static const short DEMO_TO[3][3]   = { { 54, 55, 56 }, { 75, 76, 77 }, { 111, 112, 113 } };
+
+static void drawTitleBackdrop(void)
+{
+    for (int y = 0; y * CELL < SCREEN_H; y++)
+        for (int x = 0; x * CELL < SCREEN_W; x++)
+            DrawRectangle(x * CELL + 1, y * CELL + 1,
+                          CELL - 2, CELL - 2, (Color){18, 24, 44, 255});
+
+    float cycle = titleT;
+    while (cycle >= 6.0f) cycle -= 6.0f;
+    float phase = cycle / 6.0f;
+
+    float move = (phase - 0.10f) / 0.50f;
+    if (move < 0.0f) move = 0.0f;
+    if (move > 1.0f) move = 1.0f;
+
+    for (int f = 0; f < 3; f++) {
+        for (int k = 0; k < 3; k++) {
+            int a = DEMO_FROM[f][k], b = DEMO_TO[f][k];
+            float ax = (float)(a % GRID_W), ay = (float)(a / GRID_W);
+            float bx = (float)(b % GRID_W), by = (float)(b / GRID_W);
+            float px = ax + (bx - ax) * move;
+            float py = ay + (by - ay) * move;
+
+            Color c = FILE_COL[f];
+            unsigned char alpha = 110;
+            if (phase > 0.72f) {
+                float k2 = (phase - 0.72f) / 0.16f;
+                if (k2 > 1.0f) k2 = 1.0f;
+                alpha = (unsigned char)(110.0f * (1.0f - k2));
+                c = (Color){255, 255, 255, alpha};
+            }
+            DrawRectangle(GRID_X + (int)(px * CELL) + 4, GRID_Y + (int)(py * CELL) + 4,
+                          CELL - 8, CELL - 8, (Color){c.r, c.g, c.b, alpha});
+        }
+    }
+
+    int sweep = (int)(phase * (float)SCREEN_W);
+    DrawRectangle(sweep, 0, 2, SCREEN_H, (Color){120, 200, 255, 55});
+
+    DrawRectangle(0, 0, SCREEN_W, SCREEN_H, (Color){10, 14, 28, 200});
+}
+
 static int actionPressed(void)
 {
     return IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_Z) || IsKeyPressed(KEY_ENTER) ||
@@ -502,6 +550,17 @@ static int dirHeld(int *dx, int *dy)
     if (IsKeyDown(KEY_UP)    || IsKeyDown(KEY_W) || IsGamepadButtonDown(0, GAMEPAD_BUTTON_LEFT_FACE_UP))    *dy = -1;
     if (IsKeyDown(KEY_DOWN)  || IsKeyDown(KEY_S) || IsGamepadButtonDown(0, GAMEPAD_BUTTON_LEFT_FACE_DOWN))  *dy =  1;
     return (*dx != 0 || *dy != 0);
+}
+
+static int anyInputActive(void)
+{
+    int dx, dy;
+    if (dirHeld(&dx, &dy)) return 1;
+    if (actionPressed()) return 1;
+    if (IsKeyPressed(KEY_P) || IsKeyPressed(KEY_M) || IsKeyPressed(KEY_ESCAPE) ||
+        IsKeyPressed(KEY_F) || IsKeyPressed(KEY_F11)) return 1;
+    if (IsGamepadButtonPressed(0, GAMEPAD_BUTTON_MIDDLE_RIGHT)) return 1;
+    return 0;
 }
 
 static void updatePlay(float dt)
@@ -795,6 +854,8 @@ static void drawTitle(void)
              (Color){255, 110, 110, 255});
 
     DrawText("PRESS SPACE TO START", SCREEN_W / 2 - 120, 500, 20, TEXTCOL);
+    DrawText("F: FULLSCREEN     M: SOUND     ESC: QUIT",
+             SCREEN_W / 2 - 145, 560, 10, DIMTEXT);
 }
 
 static void drawPaused(void)
@@ -820,7 +881,11 @@ static void drawOver(void)
 int main(void)
 {
     SetTraceLogLevel(LOG_WARNING);
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
     InitWindow(SCREEN_W, SCREEN_H, "DEFRAG");
+    SetWindowMinSize(480, 330);
+    target = LoadRenderTexture(SCREEN_W, SCREEN_H);
+    SetTextureFilter(target.texture, TEXTURE_FILTER_POINT);
     initAudio();
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
@@ -834,7 +899,15 @@ int main(void)
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
+        titleT += dt;
         if (IsKeyPressed(KEY_M)) muted = !muted;
+        if (IsKeyPressed(KEY_F) || IsKeyPressed(KEY_F11)) ToggleFullscreen();
+
+        if (anyInputActive()) idleT = 0.0f;
+        else idleT += dt;
+
+        if (screen == SC_PLAY && idleT > 30.0f) screen = SC_TITLE;
+        if (screen == SC_OVER && idleT > 15.0f) screen = SC_TITLE;
 
         switch (screen) {
         case SC_TITLE:
@@ -861,10 +934,11 @@ int main(void)
             break;
         }
 
-        BeginDrawing();
+        BeginTextureMode(target);
         ClearBackground(BG);
 
         if (screen == SC_TITLE) {
+            drawTitleBackdrop();
             drawTitle();
         } else {
             Camera2D cam = {0};
@@ -880,12 +954,35 @@ int main(void)
 
             if (paused && screen == SC_PLAY) drawPaused();
             if (screen == SC_OVER) drawOver();
-        }
 
+            float limit = (screen == SC_OVER) ? 15.0f : 30.0f;
+            if (idleT > limit - 5.0f) {
+                const char *msg = TextFormat("NO INPUT - RETURNING TO TITLE IN %d",
+                                             (int)(limit - idleT) + 1);
+                int w = MeasureText(msg, 16);
+                DrawRectangle(0, SCREEN_H / 2 - 22, SCREEN_W, 44, (Color){10, 14, 28, 220});
+                DrawText(msg, SCREEN_W / 2 - w / 2, SCREEN_H / 2 - 8, 16,
+                         (Color){255, 240, 120, 255});
+            }
+        }
+        EndTextureMode();
+
+        BeginDrawing();
+        ClearBackground(BLACK);
+        float sw = (float)GetScreenWidth();
+        float sh = (float)GetScreenHeight();
+        float scx = sw / (float)SCREEN_W;
+        float scy = sh / (float)SCREEN_H;
+        float sc = (scx < scy) ? scx : scy;
+        Rectangle srcR = { 0.0f, 0.0f, (float)SCREEN_W, -(float)SCREEN_H };
+        Rectangle dstR = { (sw - SCREEN_W * sc) * 0.5f, (sh - SCREEN_H * sc) * 0.5f,
+                           SCREEN_W * sc, SCREEN_H * sc };
+        DrawTexturePro(target.texture, srcR, dstR, (Vector2){ 0.0f, 0.0f }, 0.0f, WHITE);
         EndDrawing();
     }
 
 quit:
+    UnloadRenderTexture(target);
     if (audioReady) CloseAudioDevice();
     CloseWindow();
     return 0;
