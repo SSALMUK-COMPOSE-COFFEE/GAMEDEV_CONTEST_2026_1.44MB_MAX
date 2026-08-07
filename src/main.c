@@ -2,14 +2,14 @@
 #include "raylib.h"
 #include <stddef.h>
 
-#define GRID_W 24
-#define GRID_H 14
+#define GRID_W 18
+#define GRID_H 10
 #define GRID_N (GRID_W * GRID_H)
-#define CELL 32
-#define GRID_X 96
-#define GRID_Y 150
+#define CELL 40
+#define GRID_X 120
+#define GRID_Y 170
 #define SCREEN_W 960
-#define SCREEN_H 620
+#define SCREEN_H 660
 
 #define MAX_FILES 8
 #define FILE_MIN 2
@@ -142,6 +142,7 @@ static void checkSorted(void)
         }
         if (count != files[f].size) continue;
         if (last - first != count - 1) continue;
+        if (first / GRID_W != last / GRID_W) continue;
 
         for (int i = first; i <= last; i++) {
             grid[i].kind = CLEARING;
@@ -154,6 +155,47 @@ static void checkSorted(void)
         score += count * count * 10 * combo;
         shake = 4.0f + (float)count;
     }
+}
+
+static int targetWindow(int f)
+{
+    int n = files[f].size;
+    int headIdx = headY * GRID_W + headX;
+    int best = -1, bestScore = -1;
+
+    for (int s = 0; s + n <= GRID_N; s++) {
+        if (s / GRID_W != (s + n - 1) / GRID_W) continue;
+
+        int own = 0, ok = 1;
+        for (int k = 0; k < n; k++) {
+            Cell *c = &grid[s + k];
+            if (c->kind == EMPTY) continue;
+            if (c->kind == BLOCK && c->file == f) { own++; continue; }
+            ok = 0;
+            break;
+        }
+        if (!ok) continue;
+
+        int dist = (s > headIdx) ? (s - headIdx) : (headIdx - s);
+        int sc = own * 10000 - dist;
+        if (sc > bestScore) { bestScore = sc; best = s; }
+    }
+    return best;
+}
+
+static int focusFile(void)
+{
+    if (carrying >= 0) return carrying;
+
+    int i = headY * GRID_W + headX;
+    if (grid[i].kind == BLOCK && files[grid[i].file].alive) return grid[i].file;
+
+    int urgent = -1;
+    for (int f = 0; f < MAX_FILES; f++) {
+        if (!files[f].alive) continue;
+        if (urgent < 0 || files[f].life < files[urgent].life) urgent = f;
+    }
+    return urgent;
 }
 
 static void resetGame(void)
@@ -170,10 +212,10 @@ static void resetGame(void)
     playT = 0;
     shake = 0;
     moveT = 0;
-    writeInterval = 4.0f;
-    writeT = 1.0f;
+    writeInterval = 4.5f;
+    writeT = 7.0f;
 
-    for (int i = 0; i < 3; i++) writeFile(rndRange(FILE_MIN, FILE_MAX));
+    writeFile(2);
 }
 
 static int actionPressed(void)
@@ -314,19 +356,35 @@ static void drawGrid(void)
                 }
                 drawCellRect(x, y, 3, col);
 
-                if (i > 0 && grid[i - 1].kind == BLOCK && grid[i - 1].file == c->file) {
-                    if (x > 0) {
-                        DrawRectangle(GRID_X + x * CELL - 4, GRID_Y + y * CELL + 12,
-                                      8, 8, col);
-                    } else {
-                        DrawRectangle(GRID_X - 6, GRID_Y + y * CELL + 12, 6, 8, col);
-                        DrawRectangle(GRID_X + GRID_W * CELL, GRID_Y + (y - 1) * CELL + 12, 6, 8, col);
-                    }
+                if (x > 0 && grid[i - 1].kind == BLOCK && grid[i - 1].file == c->file) {
+                    DrawRectangle(GRID_X + x * CELL - 5, GRID_Y + y * CELL + CELL / 2 - 5,
+                                  10, 10, col);
                 }
             } else if (c->kind == CLEARING) {
                 float k = c->flash / 0.30f;
                 if (k < 0.0f) k = 0.0f;
                 drawCellRect(x, y, 3, (Color){255, 255, 255, (unsigned char)(255 * k)});
+            }
+        }
+    }
+
+    int ff = focusFile();
+    if (ff >= 0) {
+        int s = targetWindow(ff);
+        if (s >= 0) {
+            Color fc = FILE_COL[ff & 7];
+            float pulse = 0.5f + 0.5f * (float)((int)(playT * 4.0f) & 1);
+            for (int k = 0; k < files[ff].size; k++) {
+                int i = s + k;
+                int x = i % GRID_W, y = i / GRID_W;
+                if (grid[i].kind == BLOCK && grid[i].file == ff) continue;
+                DrawRectangle(GRID_X + x * CELL + 3, GRID_Y + y * CELL + 3,
+                              CELL - 6, CELL - 6,
+                              (Color){fc.r, fc.g, fc.b, (unsigned char)(70 + 55 * pulse)});
+                DrawRectangleLinesEx(
+                    (Rectangle){(float)(GRID_X + x * CELL + 3), (float)(GRID_Y + y * CELL + 3),
+                                CELL - 6, CELL - 6}, 3,
+                    (Color){255, 255, 255, (unsigned char)(150 + 105 * pulse)});
             }
         }
     }
@@ -377,8 +435,11 @@ static void drawHud(void)
         col++;
     }
 
+    DrawText("CARRY EACH BLOCK INTO THE GLOWING SLOTS OF ITS OWN COLOUR",
+             GRID_X, GRID_Y + GRID_H * CELL + 22, 14,
+             (carrying >= 0) ? FILE_COL[carrying & 7] : TEXTCOL);
     DrawText("MOVE: ARROWS / WASD      PICK & DROP: SPACE      ESC: QUIT",
-             96, GRID_Y + GRID_H * CELL + 24, 10, DIMTEXT);
+             GRID_X, GRID_Y + GRID_H * CELL + 44, 10, DIMTEXT);
 }
 
 static void drawTitle(void)
@@ -388,11 +449,13 @@ static void drawTitle(void)
              SCREEN_W / 2 - 210, 250, 12, DIMTEXT);
 
     DrawText("MOVE THE HEAD", 300, 330, 12, DIMTEXT);
-    DrawText("ARROWS / WASD / D-PAD", 520, 330, 12, TEXTCOL);
+    DrawText("ARROWS / WASD / D-PAD", 540, 330, 12, TEXTCOL);
     DrawText("PICK UP  /  PUT DOWN", 300, 360, 12, DIMTEXT);
-    DrawText("SPACE / Z / GAMEPAD A", 520, 360, 12, TEXTCOL);
-    DrawText("A FILE WHOSE BLOCKS SIT AT CONSECUTIVE ADDRESSES", 300, 400, 12, DIMTEXT);
-    DrawText("IS COMPACTED AND ITS SECTORS ARE FREED.", 300, 420, 12, DIMTEXT);
+    DrawText("SPACE / Z / GAMEPAD A", 540, 360, 12, TEXTCOL);
+    DrawText("FILL THE GLOWING SLOTS", 300, 390, 12, DIMTEXT);
+    DrawText("THE FILE COMPACTS AWAY", 540, 390, 12, TEXTCOL);
+    DrawText("LEAVE A FILE TOO LONG AND IT ROTS INTO DEAD SECTORS.", 300, 430, 12,
+             (Color){255, 110, 110, 255});
 
     DrawText("PRESS SPACE TO START", SCREEN_W / 2 - 120, 500, 20, TEXTCOL);
 }
