@@ -1,6 +1,7 @@
 
 #include "raylib.h"
 #include <stddef.h>
+#include <stdlib.h>
 
 #define GRID_W 18
 #define GRID_H 10
@@ -110,6 +111,181 @@ static int rndRange(int lo, int hi)
     return lo + (int)(rnd() % (unsigned int)(hi - lo + 1));
 }
 
+#define SR 22050
+#define STEP_SAMPLES (SR * 60 / (132 * 4))
+
+enum { OSC_SQUARE = 0, OSC_TRI, OSC_NOISE };
+
+static Sound sfxPick, sfxDrop, sfxRot, sfxOver, sfxAssist;
+static Sound sfxCompact[4];
+static AudioStream musicStream;
+static int audioReady;
+static int muted;
+static unsigned long long musicSample;
+static unsigned int noiseState = 0x2545f491u;
+
+static const float SEMI[12] = {
+    32.703f, 34.648f, 36.708f, 38.891f, 41.203f, 43.654f,
+    46.249f, 48.999f, 51.913f, 55.000f, 58.270f, 61.735f
+};
+
+static float noteFreq(int idx)
+{
+    float f = SEMI[idx % 12];
+    for (int o = idx / 12; o > 0; o--) f *= 2.0f;
+    return f;
+}
+
+static float noiseSample(void)
+{
+    noiseState ^= noiseState << 13;
+    noiseState ^= noiseState >> 17;
+    noiseState ^= noiseState << 5;
+    return (float)((int)(noiseState & 0xffff) - 32768) / 32768.0f;
+}
+
+static float osc(int type, float phase)
+{
+    if (type == OSC_SQUARE) return (phase < 0.5f) ? 1.0f : -1.0f;
+    if (type == OSC_TRI) {
+        float t = phase < 0.5f ? phase * 2.0f : (1.0f - phase) * 2.0f;
+        return t * 2.0f - 1.0f;
+    }
+    return noiseSample();
+}
+
+static Sound renderTone(const float *f0, const float *f1, const int *type,
+                        int segments, float segDur, float vol)
+{
+    int segFrames = (int)(segDur * SR);
+    int frames = segFrames * segments;
+    short *data = (short *)malloc((size_t)frames * sizeof(short));
+    if (!data) { Sound s = {0}; return s; }
+
+    float phase = 0.0f;
+    for (int seg = 0; seg < segments; seg++) {
+        for (int i = 0; i < segFrames; i++) {
+            float t = (float)i / (float)segFrames;
+            float freq = f0[seg] + (f1[seg] - f0[seg]) * t;
+            phase += freq / (float)SR;
+            while (phase >= 1.0f) phase -= 1.0f;
+
+            float env = 1.0f - t;
+            env = env * env;
+            float v = osc(type[seg], phase) * env * vol;
+            if (v > 1.0f) v = 1.0f;
+            if (v < -1.0f) v = -1.0f;
+            data[seg * segFrames + i] = (short)(v * 32000.0f);
+        }
+    }
+
+    Wave w = {0};
+    w.frameCount = (unsigned int)frames;
+    w.sampleRate = SR;
+    w.sampleSize = 16;
+    w.channels = 1;
+    w.data = data;
+
+    Sound s = LoadSoundFromWave(w);
+    free(data);
+    return s;
+}
+
+static void musicCallback(void *buffer, unsigned int frames)
+{
+    static const unsigned char BASS[4] = { 9, 5, 0, 7 };
+    static const unsigned char ARP[4][3] = {
+        { 9, 12, 16 }, { 5, 9, 12 }, { 0, 4, 7 }, { 7, 11, 14 }
+    };
+    static float leadPhase, bassPhase;
+    static float leadEnv, bassEnv, hatEnv;
+    static float leadFreq = 440.0f, bassFreq = 110.0f;
+    static int lastStep = -1;
+
+    short *out = (short *)buffer;
+
+    for (unsigned int i = 0; i < frames; i++) {
+        int step = (int)(musicSample / STEP_SAMPLES);
+        if (step != lastStep) {
+            lastStep = step;
+            int s = step % 64;
+            int bar = s / 16;
+            leadFreq = noteFreq(ARP[bar][(s / 2) % 3] + 36);
+            leadEnv = 0.20f;
+            if (s % 8 == 0) {
+                bassFreq = noteFreq(BASS[bar] + 12);
+                bassEnv = 0.32f;
+            }
+            if (s % 4 == 2) hatEnv = 0.10f;
+        }
+
+        leadPhase += leadFreq / (float)SR;
+        while (leadPhase >= 1.0f) leadPhase -= 1.0f;
+        bassPhase += bassFreq / (float)SR;
+        while (bassPhase >= 1.0f) bassPhase -= 1.0f;
+
+        float v = osc(OSC_SQUARE, leadPhase) * leadEnv
+                + osc(OSC_TRI, bassPhase) * bassEnv
+                + noiseSample() * hatEnv;
+
+        leadEnv -= leadEnv * 7.0f / (float)SR;
+        bassEnv -= bassEnv * 4.0f / (float)SR;
+        hatEnv -= hatEnv * 45.0f / (float)SR;
+
+        if (muted) v = 0.0f;
+        if (v > 1.0f) v = 1.0f;
+        if (v < -1.0f) v = -1.0f;
+        out[i] = (short)(v * 26000.0f);
+        musicSample++;
+    }
+}
+
+static void playSfx(Sound s)
+{
+    if (audioReady && !muted) PlaySound(s);
+}
+
+static void initAudio(void)
+{
+    InitAudioDevice();
+    if (!IsAudioDeviceReady()) return;
+    audioReady = 1;
+
+    float a[4], b[4];
+    int t[4];
+
+    a[0] = 520.0f;  b[0] = 900.0f;  t[0] = OSC_SQUARE;
+    sfxPick = renderTone(a, b, t, 1, 0.07f, 0.35f);
+
+    a[0] = 420.0f;  b[0] = 200.0f;  t[0] = OSC_SQUARE;
+    sfxDrop = renderTone(a, b, t, 1, 0.06f, 0.30f);
+
+    a[0] = 900.0f;  b[0] = 120.0f;  t[0] = OSC_NOISE;
+    sfxRot = renderTone(a, b, t, 1, 0.45f, 0.40f);
+
+    a[0] = 330.0f;  b[0] = 60.0f;   t[0] = OSC_TRI;
+    sfxOver = renderTone(a, b, t, 1, 1.10f, 0.50f);
+
+    a[0] = 700.0f;  b[0] = 1000.0f; t[0] = OSC_SQUARE;
+    sfxAssist = renderTone(a, b, t, 1, 0.18f, 0.25f);
+
+    for (int k = 0; k < 4; k++) {
+        float base = 440.0f;
+        for (int s = 0; s < k; s++) base *= 1.335f;
+        for (int s = 0; s < 3; s++) {
+            float mul = (s == 0) ? 1.0f : (s == 1 ? 1.26f : 1.5f);
+            a[s] = base * mul;
+            b[s] = base * mul;
+            t[s] = OSC_SQUARE;
+        }
+        sfxCompact[k] = renderTone(a, b, t, 3, 0.055f, 0.34f);
+    }
+
+    musicStream = LoadAudioStream(SR, 16, 1);
+    SetAudioStreamCallback(musicStream, musicCallback);
+    PlayAudioStream(musicStream);
+}
+
 static void spawnParticle(float x, float y, float speed, Color c)
 {
     Particle *p = &parts[partNext];
@@ -193,6 +369,7 @@ static void rotFile(int f)
     comboT = 0;
     shake = 14.0f;
     hitstop = 0.10f;
+    playSfx(sfxRot);
 }
 
 static void checkSorted(void)
@@ -224,6 +401,7 @@ static void checkSorted(void)
         shake = 5.0f + (float)count * 1.5f;
         hitstop = 0.05f + (float)count * 0.012f;
         spawnPop(first % GRID_W, first / GRID_W, gained, FILE_COL[f & 7]);
+        playSfx(sfxCompact[(combo - 1 > 3) ? 3 : combo - 1]);
 
         int before = assistLevel();
         compacted++;
@@ -231,6 +409,7 @@ static void checkSorted(void)
             noticeMsg = (assistLevel() == ASSIST_OFF) ? "TARGET DISPLAY OFF"
                                                       : "TARGET DISPLAY: CARRYING ONLY";
             noticeT = 2.6f;
+            playSfx(sfxAssist);
         }
     }
 }
@@ -348,6 +527,7 @@ static void updatePlay(float dt)
                 carrying = grid[i].file;
                 grid[i].kind = EMPTY;
                 grid[i].flash = 0.2f;
+                playSfx(sfxPick);
             }
         } else {
             if (grid[i].kind == EMPTY) {
@@ -355,6 +535,7 @@ static void updatePlay(float dt)
                 grid[i].file = (unsigned char)carrying;
                 grid[i].flash = 0.25f;
                 spawnBurst(headX, headY, 4, 70.0f, FILE_COL[carrying & 7]);
+                playSfx(sfxDrop);
                 carrying = -1;
                 checkSorted();
             }
@@ -367,6 +548,7 @@ static void updatePlay(float dt)
             if (score > best) best = score;
             screen = SC_OVER;
             shake = 18.0f;
+            playSfx(sfxOver);
             return;
         }
         writeInterval -= 0.06f;
@@ -577,8 +759,10 @@ static void drawHud(void)
         : "CARRY EACH BLOCK INTO THE GLOWING SLOTS OF ITS OWN COLOUR";
     DrawText(hint, GRID_X, GRID_Y + GRID_H * CELL + 22, 14,
              (carrying >= 0) ? FILE_COL[carrying & 7] : TEXTCOL);
-    DrawText("MOVE: ARROWS / WASD      PICK & DROP: SPACE      ESC: QUIT",
+    DrawText("MOVE: ARROWS / WASD      PICK & DROP: SPACE      ESC: QUIT      M: SOUND",
              GRID_X, GRID_Y + GRID_H * CELL + 44, 10, DIMTEXT);
+    DrawText(muted ? "SOUND OFF" : "SOUND ON", SCREEN_W - 200, 116, 10,
+             muted ? (Color){255, 110, 110, 255} : DIMTEXT);
 
     if (noticeT > 0.0f && noticeMsg) {
         int w = MeasureText(noticeMsg, 20);
@@ -620,6 +804,7 @@ int main(void)
 {
     SetTraceLogLevel(LOG_WARNING);
     InitWindow(SCREEN_W, SCREEN_H, "DEFRAG");
+    initAudio();
     SetTargetFPS(60);
     SetExitKey(KEY_NULL);
 
@@ -632,6 +817,7 @@ int main(void)
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
+        if (IsKeyPressed(KEY_M)) muted = !muted;
 
         switch (screen) {
         case SC_TITLE:
@@ -674,6 +860,7 @@ int main(void)
     }
 
 quit:
+    if (audioReady) CloseAudioDevice();
     CloseWindow();
     return 0;
 }
