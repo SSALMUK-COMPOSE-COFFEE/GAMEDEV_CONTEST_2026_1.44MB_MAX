@@ -45,7 +45,19 @@ static float writeT, writeInterval;
 static float playT;
 static float shake;
 static float moveT;
+static int compacted;
+static const char *noticeMsg;
+static float noticeT;
 static unsigned int rngState;
+
+enum { ASSIST_FULL = 0, ASSIST_CARRY_ONLY, ASSIST_OFF };
+
+static int assistLevel(void)
+{
+    if (compacted < 6)  return ASSIST_FULL;
+    if (compacted < 15) return ASSIST_CARRY_ONLY;
+    return ASSIST_OFF;
+}
 
 static const Color FILE_COL[8] = {
     {  84, 200, 255, 255 },
@@ -154,6 +166,14 @@ static void checkSorted(void)
         comboT = 4.0f;
         score += count * count * 10 * combo;
         shake = 4.0f + (float)count;
+
+        int before = assistLevel();
+        compacted++;
+        if (assistLevel() != before) {
+            noticeMsg = (assistLevel() == ASSIST_OFF) ? "TARGET DISPLAY OFF"
+                                                      : "TARGET DISPLAY: CARRYING ONLY";
+            noticeT = 2.6f;
+        }
     }
 }
 
@@ -185,7 +205,9 @@ static int targetWindow(int f)
 
 static int focusFile(void)
 {
+    if (assistLevel() == ASSIST_OFF) return -1;
     if (carrying >= 0) return carrying;
+    if (assistLevel() == ASSIST_CARRY_ONLY) return -1;
 
     int i = headY * GRID_W + headX;
     if (grid[i].kind == BLOCK && files[grid[i].file].alive) return grid[i].file;
@@ -212,6 +234,9 @@ static void resetGame(void)
     playT = 0;
     shake = 0;
     moveT = 0;
+    compacted = 0;
+    noticeMsg = NULL;
+    noticeT = 0;
     writeInterval = 4.5f;
     writeT = 7.0f;
 
@@ -292,6 +317,7 @@ static void updatePlay(float dt)
     }
 
     if (comboT > 0.0f) { comboT -= dt; if (comboT <= 0.0f) combo = 0; }
+    if (noticeT > 0.0f) noticeT -= dt;
     if (shake > 0.0f)  { shake -= dt * 30.0f; if (shake < 0.0f) shake = 0.0f; }
 
     for (int i = 0; i < GRID_N; i++) {
@@ -421,25 +447,38 @@ static void drawHud(void)
     DrawRectangleLines(640, 56, 220, 14, SECTOR_LN);
     DrawText(TextFormat("%d SECTORS  (%d%%)", fr, pct), 640, 76, 10, DIMTEXT);
 
-    int col = 0;
+    int col = GRID_X;
     for (int f = 0; f < MAX_FILES; f++) {
         if (!files[f].alive) continue;
-        int x = 96 + col * 76;
-        int y = 108;
+        int y = 106;
         float t = (files[f].lifeMax > 0.0f) ? files[f].life / files[f].lifeMax : 0.0f;
         if (t < 0.0f) t = 0.0f;
-        DrawRectangle(x, y, 14, 14, FILE_COL[f & 7]);
-        DrawRectangle(x + 18, y + 3, 48, 8, SECTOR);
-        DrawRectangle(x + 18, y + 3, (int)(48 * t), 8,
+
+        for (int k = 0; k < files[f].size; k++)
+            DrawRectangle(col + k * 9, y, 7, 12, FILE_COL[f & 7]);
+
+        int barX = col + files[f].size * 9 + 4;
+        DrawRectangle(barX, y + 2, 30, 8, SECTOR);
+        DrawRectangle(barX, y + 2, (int)(30 * t), 8,
                       (t < 0.35f) ? (Color){255, 90, 90, 255} : FILE_COL[f & 7]);
-        col++;
+
+        col = barX + 30 + 22;
     }
 
-    DrawText("CARRY EACH BLOCK INTO THE GLOWING SLOTS OF ITS OWN COLOUR",
-             GRID_X, GRID_Y + GRID_H * CELL + 22, 14,
+    const char *hint = (assistLevel() == ASSIST_OFF)
+        ? "PACK EACH FILE INTO ONE UNBROKEN RUN ON A SINGLE TRACK"
+        : "CARRY EACH BLOCK INTO THE GLOWING SLOTS OF ITS OWN COLOUR";
+    DrawText(hint, GRID_X, GRID_Y + GRID_H * CELL + 22, 14,
              (carrying >= 0) ? FILE_COL[carrying & 7] : TEXTCOL);
     DrawText("MOVE: ARROWS / WASD      PICK & DROP: SPACE      ESC: QUIT",
              GRID_X, GRID_Y + GRID_H * CELL + 44, 10, DIMTEXT);
+
+    if (noticeT > 0.0f && noticeMsg) {
+        int w = MeasureText(noticeMsg, 20);
+        unsigned char a = (unsigned char)(255 * ((noticeT > 1.0f) ? 1.0f : noticeT));
+        DrawText(noticeMsg, SCREEN_W / 2 - w / 2, GRID_Y - 34, 20,
+                 (Color){255, 240, 120, a});
+    }
 }
 
 static void drawTitle(void)
