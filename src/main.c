@@ -70,6 +70,27 @@ static const Color FILE_COL[8] = {
     { 255, 140,  90, 255 },
 };
 
+#define MAX_PARTICLES 160
+#define MAX_POPS 8
+
+typedef struct {
+    float x, y, vx, vy, life, maxLife;
+    Color c;
+} Particle;
+
+typedef struct {
+    float x, y, life;
+    int value;
+    Color c;
+} Pop;
+
+static Particle parts[MAX_PARTICLES];
+static int partNext;
+static Pop pops[MAX_POPS];
+static int popNext;
+static float hitstop;
+static float headVX, headVY;
+
 static const Color BG        = {  10,  14,  28, 255 };
 static const Color PANEL     = {  20,  28,  50, 255 };
 static const Color SECTOR    = {  26,  34,  60, 255 };
@@ -87,6 +108,38 @@ static unsigned int rnd(void)
 static int rndRange(int lo, int hi)
 {
     return lo + (int)(rnd() % (unsigned int)(hi - lo + 1));
+}
+
+static void spawnParticle(float x, float y, float speed, Color c)
+{
+    Particle *p = &parts[partNext];
+    partNext = (partNext + 1) % MAX_PARTICLES;
+
+    p->x = x;
+    p->y = y;
+    p->vx = (float)(rndRange(-100, 100)) * 0.01f * speed;
+    p->vy = (float)(rndRange(-100, 100)) * 0.01f * speed - speed * 0.35f;
+    p->maxLife = 0.35f + (float)rndRange(0, 30) * 0.01f;
+    p->life = p->maxLife;
+    p->c = c;
+}
+
+static void spawnBurst(int cellX, int cellY, int n, float speed, Color c)
+{
+    float cx = (float)(GRID_X + cellX * CELL + CELL / 2);
+    float cy = (float)(GRID_Y + cellY * CELL + CELL / 2);
+    for (int i = 0; i < n; i++) spawnParticle(cx, cy, speed, c);
+}
+
+static void spawnPop(int cellX, int cellY, int value, Color c)
+{
+    Pop *p = &pops[popNext];
+    popNext = (popNext + 1) % MAX_POPS;
+    p->x = (float)(GRID_X + cellX * CELL + CELL / 2);
+    p->y = (float)(GRID_Y + cellY * CELL);
+    p->life = 0.9f;
+    p->value = value;
+    p->c = c;
 }
 
 static int freeCount(void)
@@ -131,13 +184,15 @@ static void rotFile(int f)
         if (grid[i].kind == BLOCK && grid[i].file == f) {
             grid[i].kind = BAD;
             grid[i].flash = 0.5f;
+            spawnBurst(i % GRID_W, i / GRID_W, 7, 150.0f, (Color){200, 60, 70, 255});
         }
     }
     files[f].alive = 0;
     if (carrying == f) carrying = -1;
     combo = 0;
     comboT = 0;
-    shake = 12.0f;
+    shake = 14.0f;
+    hitstop = 0.10f;
 }
 
 static void checkSorted(void)
@@ -158,14 +213,17 @@ static void checkSorted(void)
 
         for (int i = first; i <= last; i++) {
             grid[i].kind = CLEARING;
-            grid[i].flash = 0.30f;
+            grid[i].flash = 0.28f + (float)(i - first) * 0.07f;
         }
         files[f].alive = 0;
 
         combo++;
         comboT = 4.0f;
-        score += count * count * 10 * combo;
-        shake = 4.0f + (float)count;
+        int gained = count * count * 10 * combo;
+        score += gained;
+        shake = 5.0f + (float)count * 1.5f;
+        hitstop = 0.05f + (float)count * 0.012f;
+        spawnPop(first % GRID_W, first / GRID_W, gained, FILE_COL[f & 7]);
 
         int before = assistLevel();
         compacted++;
@@ -234,6 +292,11 @@ static void resetGame(void)
     playT = 0;
     shake = 0;
     moveT = 0;
+    headVX = (float)headX;
+    headVY = (float)headY;
+    hitstop = 0;
+    for (int i = 0; i < MAX_PARTICLES; i++) parts[i].life = 0;
+    for (int i = 0; i < MAX_POPS; i++) pops[i].life = 0;
     compacted = 0;
     noticeMsg = NULL;
     noticeT = 0;
@@ -291,6 +354,7 @@ static void updatePlay(float dt)
                 grid[i].kind = BLOCK;
                 grid[i].file = (unsigned char)carrying;
                 grid[i].flash = 0.25f;
+                spawnBurst(headX, headY, 4, 70.0f, FILE_COL[carrying & 7]);
                 carrying = -1;
                 checkSorted();
             }
@@ -318,6 +382,25 @@ static void updatePlay(float dt)
 
     if (comboT > 0.0f) { comboT -= dt; if (comboT <= 0.0f) combo = 0; }
     if (noticeT > 0.0f) noticeT -= dt;
+
+    float k = dt * 22.0f;
+    if (k > 1.0f) k = 1.0f;
+    headVX += ((float)headX - headVX) * k;
+    headVY += ((float)headY - headVY) * k;
+
+    for (int i = 0; i < MAX_PARTICLES; i++) {
+        Particle *p = &parts[i];
+        if (p->life <= 0.0f) continue;
+        p->life -= dt;
+        p->x += p->vx * dt;
+        p->y += p->vy * dt;
+        p->vy += 420.0f * dt;
+    }
+    for (int i = 0; i < MAX_POPS; i++) {
+        if (pops[i].life <= 0.0f) continue;
+        pops[i].life -= dt;
+        pops[i].y -= 42.0f * dt;
+    }
     if (shake > 0.0f)  { shake -= dt * 30.0f; if (shake < 0.0f) shake = 0.0f; }
 
     for (int i = 0; i < GRID_N; i++) {
@@ -325,7 +408,11 @@ static void updatePlay(float dt)
             grid[i].flash -= dt;
             if (grid[i].flash <= 0.0f) {
                 grid[i].flash = 0.0f;
-                if (grid[i].kind == CLEARING) grid[i].kind = EMPTY;
+                if (grid[i].kind == CLEARING) {
+                    spawnBurst(i % GRID_W, i / GRID_W, 6, 130.0f,
+                               FILE_COL[grid[i].file & 7]);
+                    grid[i].kind = EMPTY;
+                }
             }
         }
     }
@@ -415,11 +502,31 @@ static void drawGrid(void)
         }
     }
 
-    int hx = GRID_X + headX * CELL;
-    int hy = GRID_Y + headY * CELL;
+    int hx = GRID_X + (int)(headVX * CELL);
+    int hy = GRID_Y + (int)(headVY * CELL);
     Color hc = (carrying >= 0) ? FILE_COL[carrying & 7] : (Color){255, 255, 255, 255};
     DrawRectangleLinesEx((Rectangle){(float)hx - 2, (float)hy - 2, CELL + 4, CELL + 4}, 2, hc);
-    if (carrying >= 0) drawCellRect(headX, headY, 9, hc);
+    if (carrying >= 0)
+        DrawRectangle(hx + 9, hy + 9, CELL - 18, CELL - 18, hc);
+
+    for (int i = 0; i < MAX_PARTICLES; i++) {
+        Particle *p = &parts[i];
+        if (p->life <= 0.0f) continue;
+        float t = p->life / p->maxLife;
+        int sz = 2 + (int)(4.0f * t);
+        DrawRectangle((int)p->x - sz / 2, (int)p->y - sz / 2, sz, sz,
+                      (Color){p->c.r, p->c.g, p->c.b, (unsigned char)(255 * t)});
+    }
+
+    for (int i = 0; i < MAX_POPS; i++) {
+        Pop *p = &pops[i];
+        if (p->life <= 0.0f) continue;
+        const char *txt = TextFormat("+%d", p->value);
+        int w = MeasureText(txt, 20);
+        float t = p->life / 0.9f;
+        DrawText(txt, (int)p->x - w / 2, (int)p->y, 20,
+                 (Color){p->c.r, p->c.g, p->c.b, (unsigned char)(255 * (t > 1.0f ? 1.0f : t))});
+    }
 
     DrawRectangle(GRID_X - 10, hy + CELL / 2 - 1, GRID_W * CELL + 20, 1,
                   (Color){hc.r, hc.g, hc.b, 40});
@@ -532,7 +639,8 @@ int main(void)
             if (IsKeyPressed(KEY_ESCAPE)) goto quit;
             break;
         case SC_PLAY:
-            updatePlay(dt);
+            if (hitstop > 0.0f) hitstop -= dt;
+            else updatePlay(dt);
             if (IsKeyPressed(KEY_ESCAPE)) screen = SC_TITLE;
             break;
         case SC_OVER:
