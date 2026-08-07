@@ -130,11 +130,25 @@
 
 ```bash
 tools/bootstrap.sh  # 머신당 1회. 호스트에 맞는 zig 0.16.0 + raylib 5.5 → vendor/
+./build.sh          # 기본값 = both. 호스트 개발 빌드 + 제출용 exe
 ./build.sh win      # dist-win/defrag.exe — 심사 대상. 용량 게이트 자동 실행
 ./build.sh mac      # dist-mac/defrag — 개발용. 맥에서 직접 실행할 것
 ./build.sh linux    # dist-dev/defrag — 개발용 (X11 개발 헤더 필요)
-./build.sh both     # 호스트 개발 빌드 + win
 ```
+
+### 산출물은 폴더 2개, 파일 2개
+
+```
+dist-win/defrag.exe   ← 제출물. 이 폴더에 이 파일 하나뿐 (동봉 DLL 0개)
+dist-mac/defrag       ← 개발용. 제출과 무관
+```
+
+**하나의 파일이 양쪽에서 도는 게 아니다.** 타깃별로 별개의 바이너리다.
+제출은 `dist-win/`만 압축한다 — `01-규칙원문.md`의 "압축 해제 후 폴더 전체 합계"
+기준이므로 개발용 산출물이 섞여 들어가면 그대로 용량에 합산된다.
+
+`both`에서 개발 빌드가 실패해도 **제출 빌드는 계속 진행**된다(경고만 출력).
+플랫폼 SDK 헤더가 없는 머신 때문에 심사 대상 빌드가 막히면 안 되기 때문이다.
 
 - `vendor/`는 git에 올리지 않는다. 새 머신에서는 `bootstrap.sh`부터.
 - **맥 빌드는 크로스컴파일이 아니라 맥에서 네이티브로 돌린다.** macOS SDK가 필요하고,

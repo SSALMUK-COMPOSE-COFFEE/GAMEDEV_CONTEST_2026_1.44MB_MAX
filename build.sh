@@ -31,11 +31,11 @@ build_win() {
 
 build_mac() {
   rm -rf dist-mac && mkdir -p dist-mac build
-  cc $CFLAGS -w -x objective-c -c "$S/rglfw.c" -o build/rglfw.o
+  cc $CFLAGS -w -x objective-c -c "$S/rglfw.c" -o build/rglfw.o || return 1
   cc $CFLAGS -w -Wl,-dead_strip \
     src/main.c $RAYLIB_CORE build/rglfw.o -o dist-mac/defrag \
     -framework Cocoa -framework IOKit -framework CoreVideo -framework OpenGL \
-    -framework CoreAudio -framework AudioToolbox
+    -framework CoreAudio -framework AudioToolbox || return 1
   strip -x dist-mac/defrag
   echo "dev build: $(wc -c < dist-mac/defrag | tr -d " ") bytes (not the submission target)"
 }
@@ -44,7 +44,7 @@ build_linux() {
   rm -rf dist-dev && mkdir -p dist-dev
   cc $CFLAGS -w -D_GLFW_X11 -Wl,--gc-sections -s \
     src/main.c $RAYLIB_CORE "$S/rglfw.c" -o dist-dev/defrag \
-    -lGL -lm -lpthread -ldl -lrt -lX11
+    -lGL -lm -lpthread -ldl -lrt -lX11 || return 1
   echo "dev build: $(wc -c < dist-dev/defrag | tr -d " ") bytes (not the submission target)"
 }
 
@@ -55,10 +55,13 @@ build_host_dev() {
   esac
 }
 
-case "${1:-win}" in
+case "${1:-both}" in
   win)   build_win ;;
   mac)   build_mac ;;
   linux) build_linux ;;
-  both)  build_host_dev; build_win ;;
-  *) echo "usage: $0 win|mac|linux|both" >&2; exit 2 ;;
+  both)
+    build_host_dev || echo "WARN: dev build failed - submission build unaffected" >&2
+    build_win
+    ;;
+  *) echo "usage: $0 [both|win|mac|linux]   (default: both)" >&2; exit 2 ;;
 esac
