@@ -35,7 +35,7 @@ typedef struct {
     float lifeMax;
 } FileRec;
 
-typedef enum { SC_TITLE, SC_PLAY, SC_OVER } Screen;
+typedef enum { SC_BOOT, SC_TITLE, SC_PLAY, SC_OVER } Screen;
 
 static Cell grid[GRID_N];
 static FileRec files[MAX_FILES];
@@ -98,6 +98,11 @@ static int popNext;
 static int paused;
 static float idleT;
 static float titleT;
+static float bootT;
+static float transT;
+static Screen prevScreen;
+static int crt = 1;
+static float shownScore;
 static RenderTexture2D target;
 static int wasFocused = 1;
 static float hitstop;
@@ -544,6 +549,7 @@ static void resetGame(void)
     headY = GRID_H / 2;
     carrying = -1;
     score = 0;
+    shownScore = 0.0f;
     combo = 0;
     comboT = 0;
     playT = 0;
@@ -612,6 +618,65 @@ static void drawTitleBackdrop(void)
     DrawRectangle(0, 0, SCREEN_W, SCREEN_H, (Color){10, 14, 28, 200});
 }
 
+static const char *BOOT_LINES[] = {
+    "2P GAME ARCADE BIOS   v1.44",
+    "",
+    "DRIVE A:      3.5\" HD FLOPPY",
+    "CAPACITY      1,474,560 BYTES",
+    "",
+    "SCANNING FILE ALLOCATION TABLE ...",
+    "",
+    "FRAGMENTATION            87%",
+    "BAD SECTORS              NONE",
+    "WRITE PRESSURE           RISING",
+    "",
+    "LOADING   DEFRAG.EXE"
+};
+#define BOOT_COUNT ((int)(sizeof(BOOT_LINES) / sizeof(BOOT_LINES[0])))
+#define BOOT_STEP 0.17f
+
+static void drawBoot(void)
+{
+    Color green = { 120, 255, 150, 255 };
+    int shown = (int)(bootT / BOOT_STEP);
+    if (shown > BOOT_COUNT) shown = BOOT_COUNT;
+
+    for (int i = 0; i < shown; i++)
+        DrawText(BOOT_LINES[i], 150, 120 + i * 26, 16, green);
+
+    if (shown < BOOT_COUNT) {
+        if (((int)(bootT * 3.0f) & 1) == 0)
+            DrawRectangle(150, 132 + shown * 26, 10, 3, green);
+    } else {
+        if (((int)(bootT * 2.0f) & 1) == 0)
+            DrawText("PRESS ANY KEY", 150, 132 + BOOT_COUNT * 26 + 12, 16, green);
+    }
+}
+
+static void drawCrtOverlay(Rectangle d)
+{
+    for (int y = 0; y < (int)d.height; y += 3)
+        DrawRectangle((int)d.x, (int)d.y + y, (int)d.width, 1, (Color){0, 0, 0, 46});
+
+    int vw = (int)(d.width * 0.16f);
+    int vh = (int)(d.height * 0.18f);
+    Color dark = { 0, 0, 0, 130 };
+    Color clear = { 0, 0, 0, 0 };
+    DrawRectangleGradientV((int)d.x, (int)d.y, (int)d.width, vh, dark, clear);
+    DrawRectangleGradientV((int)d.x, (int)(d.y + d.height) - vh, (int)d.width, vh, clear, dark);
+    DrawRectangleGradientH((int)d.x, (int)d.y, vw, (int)d.height, dark, clear);
+    DrawRectangleGradientH((int)(d.x + d.width) - vw, (int)d.y, vw, (int)d.height, clear, dark);
+}
+
+static void drawTransition(void)
+{
+    if (transT <= 0.0f) return;
+    float p = 1.0f - transT / 0.40f;
+    int x = (int)(p * (float)SCREEN_W);
+    DrawRectangle(0, 0, x, SCREEN_H, (Color){10, 14, 28, (unsigned char)(120 * transT / 0.40f)});
+    DrawRectangle(x - 3, 0, 6, SCREEN_H, (Color){140, 220, 255, 200});
+}
+
 static int actionPressed(void)
 {
     return IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_Z) || IsKeyPressed(KEY_ENTER) ||
@@ -634,7 +699,7 @@ static int anyInputActive(void)
     if (dirHeld(&dx, &dy)) return 1;
     if (actionPressed()) return 1;
     if (IsKeyPressed(KEY_P) || IsKeyPressed(KEY_M) || IsKeyPressed(KEY_ESCAPE) ||
-        IsKeyPressed(KEY_F) || IsKeyPressed(KEY_F11)) return 1;
+        IsKeyPressed(KEY_F) || IsKeyPressed(KEY_F11) || IsKeyPressed(KEY_C)) return 1;
     if (IsGamepadButtonPressed(0, GAMEPAD_BUTTON_MIDDLE_RIGHT)) return 1;
     return 0;
 }
@@ -879,7 +944,7 @@ static void drawHud(void)
     DrawText("D E F R A G", 96, 34, 40, TEXTCOL);
     DrawText("1,474,560 BYTES", 96, 80, 10, DIMTEXT);
 
-    DrawText(TextFormat("SCORE %d", score), 420, 40, 20, TEXTCOL);
+    DrawText(TextFormat("SCORE %d", (int)shownScore), 420, 40, 20, TEXTCOL);
     DrawText(TextFormat("BEST %d", best), 420, 66, 10, DIMTEXT);
 
     if (combo > 1) {
@@ -964,7 +1029,7 @@ static void drawTitle(void)
              (Color){120, 200, 255, 255});
 
     DrawText("PRESS SPACE TO START", SCREEN_W / 2 - 120, 500, 20, TEXTCOL);
-    DrawText("F: FULLSCREEN     M: SOUND     ESC: QUIT",
+    DrawText("F: FULLSCREEN     C: CRT     M: SOUND     ESC: QUIT",
              SCREEN_W / 2 - 145, 560, 10, DIMTEXT);
 }
 
@@ -1001,7 +1066,8 @@ int main(void)
     SetExitKey(KEY_NULL);
 
     rngState = 0x1234567u;
-    screen = SC_TITLE;
+    screen = SC_BOOT;
+    prevScreen = SC_BOOT;
     resetGame();
 #ifdef DEFRAG_START_IN_PLAY
     screen = SC_PLAY;
@@ -1010,16 +1076,24 @@ int main(void)
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
         titleT += dt;
+        if (transT > 0.0f) transT -= dt;
+        shownScore += ((float)score - shownScore) * (dt * 9.0f > 1.0f ? 1.0f : dt * 9.0f);
+        if (IsKeyPressed(KEY_C)) crt = !crt;
         if (IsKeyPressed(KEY_M)) muted = !muted;
         if (IsKeyPressed(KEY_F) || IsKeyPressed(KEY_F11)) ToggleFullscreen();
 
         if (anyInputActive()) idleT = 0.0f;
         else idleT += dt;
 
+        if (screen != prevScreen) { transT = 0.40f; prevScreen = screen; }
         if (screen == SC_PLAY && idleT > 30.0f) screen = SC_TITLE;
         if (screen == SC_OVER && idleT > 15.0f) screen = SC_TITLE;
 
         switch (screen) {
+        case SC_BOOT:
+            bootT += dt;
+            if (anyInputActive() || bootT > BOOT_COUNT * BOOT_STEP + 2.2f) screen = SC_TITLE;
+            break;
         case SC_TITLE:
             if (actionPressed()) { resetGame(); screen = SC_PLAY; }
             if (IsKeyPressed(KEY_ESCAPE)) goto quit;
@@ -1047,7 +1121,9 @@ int main(void)
         BeginTextureMode(target);
         ClearBackground(BG);
 
-        if (screen == SC_TITLE) {
+        if (screen == SC_BOOT) {
+            drawBoot();
+        } else if (screen == SC_TITLE) {
             drawTitleBackdrop();
             drawTitle();
         } else {
@@ -1075,6 +1151,7 @@ int main(void)
                          (Color){255, 240, 120, 255});
             }
         }
+        drawTransition();
         EndTextureMode();
 
         BeginDrawing();
@@ -1088,6 +1165,7 @@ int main(void)
         Rectangle dstR = { (sw - SCREEN_W * sc) * 0.5f, (sh - SCREEN_H * sc) * 0.5f,
                            SCREEN_W * sc, SCREEN_H * sc };
         DrawTexturePro(target.texture, srcR, dstR, (Vector2){ 0.0f, 0.0f }, 0.0f, WHITE);
+        if (crt) drawCrtOverlay(dstR);
         EndDrawing();
     }
 
