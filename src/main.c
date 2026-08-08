@@ -641,7 +641,8 @@ static const char *BOOT_LINES[] = {
     "BAD SECTORS              NONE",
     "WRITE PRESSURE           RISING",
     "",
-    "LOADING   DEFRAG.EXE"
+    "LOADING   DEFRAG.EXE",
+    "(C) 2026  KWON HAJIN"
 };
 #define BOOT_COUNT ((int)(sizeof(BOOT_LINES) / sizeof(BOOT_LINES[0])))
 #define BOOT_STEP 0.17f
@@ -1042,6 +1043,10 @@ static void drawTitle(void)
     DrawText("PRESS SPACE TO START", SCREEN_W / 2 - 120, 500, 20, TEXTCOL);
     DrawText("F: FULLSCREEN     C: CRT     M: SOUND     ESC: QUIT",
              SCREEN_W / 2 - 145, 560, 10, DIMTEXT);
+
+    const char *credit = "A GAME BY KWON HAJIN  -  2026";
+    int cw = MeasureText(credit, 12);
+    DrawText(credit, SCREEN_W / 2 - cw / 2, 604, 12, TEXTCOL);
 }
 
 static void drawPaused(void)
@@ -1092,6 +1097,10 @@ static void drawOver(void)
 
     DrawText("PRESS SPACE TO RETRY", SCREEN_W / 2 - 120, 468, 20, TEXTCOL);
     DrawText("ESC: TITLE", SCREEN_W / 2 - 47, 500, 10, DIMTEXT);
+
+    const char *credit = "DEFRAG   KWON HAJIN   2026";
+    int cw = MeasureText(credit, 10);
+    DrawText(credit, SCREEN_W / 2 - cw / 2, 560, 10, DIMTEXT);
 }
 
 int main(void)
