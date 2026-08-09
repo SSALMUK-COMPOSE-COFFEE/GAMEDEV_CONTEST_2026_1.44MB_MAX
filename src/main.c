@@ -109,6 +109,16 @@ static int crt = 1;
 static float shownScore;
 static RenderTexture2D target;
 static int wasFocused = 1;
+#define MAX_RINGS 8
+
+typedef struct {
+    float x, y, life, maxLife, reach;
+    Color c;
+} Ring;
+
+static Ring rings[MAX_RINGS];
+static int ringNext;
+static float dangerFlash;
 static float hitstop;
 static float headVX, headVY;
 
@@ -337,6 +347,18 @@ static void spawnBurst(int cellX, int cellY, int n, float speed, Color c)
     for (int i = 0; i < n; i++) spawnParticle(cx, cy, speed, c);
 }
 
+static void spawnRing(int cellX, int cellY, float reach, Color c)
+{
+    Ring *r = &rings[ringNext];
+    ringNext = (ringNext + 1) % MAX_RINGS;
+    r->x = (float)(GRID_X + cellX * CELL + CELL / 2);
+    r->y = (float)(GRID_Y + cellY * CELL + CELL / 2);
+    r->maxLife = 0.45f;
+    r->life = r->maxLife;
+    r->reach = reach;
+    r->c = c;
+}
+
 static void spawnPop(int cellX, int cellY, int value, Color c)
 {
     Pop *p = &pops[popNext];
@@ -416,20 +438,31 @@ static int writeFile(int size)
 
 static void rotFile(int f)
 {
+    Color own = FILE_COL[f & 7];
+    int first = -1;
+    for (int i = 0; i < GRID_N; i++) {
+        if (grid[i].kind == BLOCK && grid[i].file == f) { first = i; break; }
+    }
+    if (first < 0) first = 0;
+
     for (int i = 0; i < GRID_N; i++) {
         if (grid[i].kind == BLOCK && grid[i].file == f) {
             grid[i].kind = BAD;
-            grid[i].flash = 0.5f;
-            spawnBurst(i % GRID_W, i / GRID_W, 7, 150.0f, (Color){200, 60, 70, 255});
+            grid[i].flash = 0.6f;
+            spawnBurst(i % GRID_W, i / GRID_W, 10, 260.0f, own);
+            spawnBurst(i % GRID_W, i / GRID_W, 8, 170.0f, (Color){230, 70, 80, 255});
+            spawnRing(i % GRID_W, i / GRID_W, 78.0f, (Color){255, 120, 110, 255});
         }
     }
+    spawnPop(first % GRID_W, first / GRID_W, -files[f].size, (Color){255, 110, 110, 255});
     files[f].alive = 0;
     rotted++;
     if (carrying == f) carrying = -1;
     combo = 0;
     comboT = 0;
-    shake = 14.0f;
-    hitstop = 0.10f;
+    shake = 20.0f;
+    hitstop = 0.14f;
+    dangerFlash = 0.55f;
     playSfx(sfxRot);
 }
 
@@ -566,6 +599,8 @@ static void resetGame(void)
     headVX = (float)headX;
     headVY = (float)headY;
     hitstop = 0;
+    dangerFlash = 0;
+    for (int i = 0; i < MAX_RINGS; i++) rings[i].life = 0;
     for (int i = 0; i < MAX_PARTICLES; i++) parts[i].life = 0;
     for (int i = 0; i < MAX_POPS; i++) pops[i].life = 0;
     compacted = 0;
@@ -802,6 +837,10 @@ static void updatePlay(float dt)
         pops[i].life -= dt;
         pops[i].y -= 42.0f * dt;
     }
+    for (int i = 0; i < MAX_RINGS; i++) {
+        if (rings[i].life > 0.0f) rings[i].life -= dt;
+    }
+    if (dangerFlash > 0.0f) dangerFlash -= dt;
     if (shake > 0.0f)  { shake -= dt * 30.0f; if (shake < 0.0f) shake = 0.0f; }
 
     for (int i = 0; i < GRID_N; i++) {
@@ -841,11 +880,29 @@ static void drawGrid(void)
 
             if (paused) continue;
             if (c->kind == BAD) {
-                drawCellRect(x, y, 3, BADCOL);
-                DrawLine(GRID_X + x * CELL + 8,  GRID_Y + y * CELL + 8,
-                         GRID_X + x * CELL + 24, GRID_Y + y * CELL + 24, (Color){160, 60, 70, 255});
-                DrawLine(GRID_X + x * CELL + 24, GRID_Y + y * CELL + 8,
-                         GRID_X + x * CELL + 8,  GRID_Y + y * CELL + 24, (Color){160, 60, 70, 255});
+                drawCellRect(x, y, 2, (Color){13, 9, 15, 255});
+                DrawRectangleLinesEx(
+                    (Rectangle){(float)(GRID_X + x * CELL + 2), (float)(GRID_Y + y * CELL + 2),
+                                CELL - 4, CELL - 4}, 2, (Color){74, 24, 32, 255});
+
+                unsigned int h = (unsigned int)i * 2654435761u;
+                int fr2 = (int)(playT * 4.0f);
+                for (int sp = 0; sp < 5; sp++) {
+                    unsigned int v = h ^ ((unsigned int)(fr2 + sp * 37) * 2246822519u);
+                    int px = (int)((v >> 5) % (unsigned int)(CELL - 12));
+                    int py = (int)((v >> 17) % (unsigned int)(CELL - 12));
+                    unsigned char a = (unsigned char)(70 + (v >> 27) * 10);
+                    DrawRectangle(GRID_X + x * CELL + 6 + px, GRID_Y + y * CELL + 6 + py,
+                                  3, 3, (Color){190, 60, 70, a});
+                }
+
+                if (c->flash > 0.0f) {
+                    float k = c->flash / 0.6f;
+                    if (k > 1.0f) k = 1.0f;
+                    drawCellRect(x, y, 2,
+                                 (Color){255, (unsigned char)(200 * k), (unsigned char)(160 * k),
+                                         (unsigned char)(230 * k)});
+                }
             } else if (c->kind == BLOCK) {
                 Color col = FILE_COL[c->file & 7];
 
@@ -936,13 +993,28 @@ static void drawGrid(void)
                       (Color){p->c.r, p->c.g, p->c.b, (unsigned char)(255 * t)});
     }
 
+    for (int i = 0; i < MAX_RINGS; i++) {
+        Ring *r = &rings[i];
+        if (r->life <= 0.0f || paused) continue;
+        float t = 1.0f - r->life / r->maxLife;
+        float rad = t * r->reach;
+        unsigned char a = (unsigned char)(220 * (1.0f - t) * (1.0f - t));
+        DrawCircleLines((int)r->x, (int)r->y, rad, (Color){r->c.r, r->c.g, r->c.b, a});
+        DrawCircleLines((int)r->x, (int)r->y, rad - 3.0f,
+                        (Color){r->c.r, r->c.g, r->c.b, (unsigned char)(a / 2)});
+    }
+
     for (int i = 0; i < MAX_POPS; i++) {
         Pop *p = &pops[i];
         if (p->life <= 0.0f || paused) continue;
-        const char *txt = TextFormat("+%d", p->value);
+        const char *txt = (p->value >= 0) ? TextFormat("+%d", p->value)
+                                          : TextFormat("%d SECTORS", p->value);
         int w = MeasureText(txt, 20);
+        int tx = (int)p->x - w / 2;
+        if (tx < GRID_X) tx = GRID_X;
+        if (tx + w > GRID_X + GRID_W * CELL) tx = GRID_X + GRID_W * CELL - w;
         float t = p->life / 0.9f;
-        DrawText(txt, (int)p->x - w / 2, (int)p->y, 20,
+        DrawText(txt, tx, (int)p->y, 20,
                  (Color){p->c.r, p->c.g, p->c.b, (unsigned char)(255 * (t > 1.0f ? 1.0f : t))});
     }
 
@@ -1188,6 +1260,11 @@ int main(void)
             drawHud();
             EndMode2D();
 
+            if (dangerFlash > 0.0f) {
+                float k = dangerFlash / 0.55f;
+                DrawRectangle(0, 0, SCREEN_W, SCREEN_H,
+                              (Color){255, 60, 70, (unsigned char)(70 * k * k)});
+            }
             if (paused && screen == SC_PLAY) drawPaused();
             if (screen == SC_OVER) drawOver();
 
