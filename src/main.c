@@ -14,7 +14,7 @@
 
 #define MAX_FILES 8
 #define FILE_MIN 2
-#define FILE_MAX 5
+#define FILE_MAX 4
 
 enum { EMPTY = 0, BLOCK, BAD, CLEARING };
 
@@ -379,10 +379,7 @@ static int freeCount(void)
 
 static int nextFileSize(void)
 {
-    int hi = 5;
-    if (compacted >= 10) hi = 6;
-    if (compacted >= 20) hi = 7;
-    return rndRange(FILE_MIN, hi);
+    return rndRange(FILE_MIN, FILE_MAX);
 }
 
 static int newFileId(void)
