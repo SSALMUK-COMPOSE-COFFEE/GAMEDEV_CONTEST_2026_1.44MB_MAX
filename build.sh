@@ -40,28 +40,19 @@ build_mac() {
   echo "dev build: $(wc -c < dist-mac/defrag | tr -d " ") bytes (not the submission target)"
 }
 
-build_linux() {
-  rm -rf dist-dev && mkdir -p dist-dev
-  cc $CFLAGS -w -D_GLFW_X11 -Wl,--gc-sections -s \
-    src/main.c $RAYLIB_CORE "$S/rglfw.c" -o dist-dev/defrag \
-    -lGL -lm -lpthread -ldl -lrt -lX11 || return 1
-  echo "dev build: $(wc -c < dist-dev/defrag | tr -d " ") bytes (not the submission target)"
-}
-
 build_host_dev() {
   case "$(uname -s)" in
     Darwin) build_mac ;;
-    *)      build_linux ;;
+    *)      echo "dev build skipped - host is not macOS (submission target is win)" ;;
   esac
 }
 
 case "${1:-both}" in
   win)   build_win ;;
   mac)   build_mac ;;
-  linux) build_linux ;;
   both)
     build_host_dev || echo "WARN: dev build failed - submission build unaffected" >&2
     build_win
     ;;
-  *) echo "usage: $0 [both|win|mac|linux]   (default: both)" >&2; exit 2 ;;
+  *) echo "usage: $0 [both|win|mac]   (default: both)" >&2; exit 2 ;;
 esac

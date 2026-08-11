@@ -339,8 +339,12 @@ tools/bootstrap.sh  # 머신당 1회. 호스트에 맞는 zig 0.16.0 + raylib 5.
 ./build.sh          # 기본값 = both. 호스트 개발 빌드 + 제출용 exe
 ./build.sh win      # dist-win/defrag.exe — 심사 대상. 용량 게이트 자동 실행
 ./build.sh mac      # dist-mac/defrag — 개발용. 맥에서 직접 실행할 것
-./build.sh linux    # dist-dev/defrag — 개발용 (X11 개발 헤더 필요)
 ```
+
+**리눅스 빌드는 지원하지 않는다 (2026-08-11).** GLFW X11 백엔드가 Xlib·Xrandr·
+Xinerama·Xcursor·XInput2 개발 헤더를 전부 요구하는데, 리눅스 산출물은 제출과
+무관한 개발 편의물이라 머신마다 그 의존성을 깔 이유가 없다. 리눅스 호스트에서
+`both`를 돌리면 개발 빌드를 **건너뛰고** 제출 빌드만 한다.
 
 ### 산출물은 폴더 2개, 파일 2개
 
