@@ -3,7 +3,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 S=vendor/raylib-5.5/src
-[ -d "$S" ] || { echo "raylib missing - run tools/bootstrap.sh" >&2; exit 1; }
+
+# vendor/ 는 git에 없다. 없으면 알아서 받는다 (bootstrap은 이미 있으면 건너뛴다)
+if [ ! -d "$S" ] || [ ! -x "$(echo vendor/zig-*/zig)" ]; then
+  echo "toolchain missing - running tools/bootstrap.sh"
+  tools/bootstrap.sh
+fi
 
 RAYLIB_CORE="$S/rcore.c $S/rshapes.c $S/rtextures.c $S/rtext.c $S/raudio.c $S/utils.c"
 

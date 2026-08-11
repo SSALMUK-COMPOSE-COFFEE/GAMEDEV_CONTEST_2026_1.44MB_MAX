@@ -335,8 +335,8 @@ SURVIVED             4:14
 ## 빌드
 
 ```bash
-tools/bootstrap.sh  # 머신당 1회. 호스트에 맞는 zig 0.16.0 + raylib 5.5 → vendor/
 ./build.sh          # 기본값 = both. 호스트 개발 빌드 + 제출용 exe
+                    # vendor/ 가 없으면 bootstrap.sh를 알아서 부른다 (첫 실행만 느림)
 ./build.sh win      # dist-win/defrag.exe — 심사 대상. 용량 게이트 자동 실행
 ./build.sh mac      # dist-mac/defrag — 개발용. 맥에서 직접 실행할 것
 ```
@@ -360,7 +360,9 @@ dist-mac/defrag       ← 개발용. 제출과 무관
 `both`에서 개발 빌드가 실패해도 **제출 빌드는 계속 진행**된다(경고만 출력).
 플랫폼 SDK 헤더가 없는 머신 때문에 심사 대상 빌드가 막히면 안 되기 때문이다.
 
-- `vendor/`는 git에 올리지 않는다. 새 머신에서는 `bootstrap.sh`부터.
+- `vendor/`는 git에 올리지 않는다. 새 머신에서는 클론하고 `./build.sh`만 치면 된다 —
+  raylib이나 zig가 없으면 `build.sh`가 `tools/bootstrap.sh`를 먼저 부른다.
+  (`bootstrap.sh`는 이미 받아둔 건 건너뛰므로 매 빌드마다 다시 받지 않는다.)
 - **맥 빌드는 크로스컴파일이 아니라 맥에서 네이티브로 돌린다.** macOS SDK가 필요하고,
   `rglfw.c`는 Cocoa `.m` 소스를 include하므로 `-x objective-c`로 따로 컴파일한다.
   링커도 GNU ld가 아니라 Apple ld라 `--gc-sections` 대신 `-dead_strip`을 쓴다.
