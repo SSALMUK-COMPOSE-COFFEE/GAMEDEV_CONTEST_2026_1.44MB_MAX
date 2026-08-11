@@ -4,7 +4,6 @@ cd "$(dirname "$0")"
 
 S=vendor/raylib-5.5/src
 
-# vendor/ 는 git에 없다. 없으면 알아서 받는다 (bootstrap은 이미 있으면 건너뛴다)
 if [ ! -d "$S" ] || [ ! -x "$(echo vendor/zig-*/zig)" ]; then
   echo "toolchain missing - running tools/bootstrap.sh"
   tools/bootstrap.sh
